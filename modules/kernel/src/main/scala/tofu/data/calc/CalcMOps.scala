@@ -178,6 +178,15 @@ class CalcMOps[+F[+_, +_], -R, -SI, +SO, +E, +A] { self: CalcM[F, R, SI, SO, E, 
     }
   }
 
+  // run endofunctorial CalcT using monadic tailrec
+  def tailrecEither[F1[+y] >: F[Any, y] @uv212](r: R, init: SI)(implicit F: Monad[F1]): F1[(SO, Either[E, A])] =
+    F.tailRecM(step(r, init)) {
+      case StepResult.Ok(state, value)                => F.pure(Right((state, Right(value))))
+      case StepResult.Error(state, err)               => F.pure(Right((state, Left(err))))
+      case StepResult.Wrap(input, state, inner, cont) =>
+        F.map(inner)(x => Left(cont.success(state, x).step(input, state)))
+    }
+
   def stepUnit(init: SI)(implicit ev: Unit <:< R): StepResult[F, SO, E, A] = step((), init)
 
   def run(r: R, init: SI)(implicit runner: CalcRunner[F]): (SO, Either[E, A]) = runner.runPair(this)(r, init)
