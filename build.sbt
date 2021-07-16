@@ -84,7 +84,6 @@ lazy val loggingStr = project
     defaultSettings,
     libraryDependencies ++= Seq(
       catsCore,
-      catsEffect,
       circeCore,
       tethys,
       tethysJackson,
@@ -95,7 +94,7 @@ lazy val loggingStr = project
       catsTagless
     ),
   )
-  .dependsOn(core, concurrent)
+  .dependsOn(kernel)
 
 lazy val loggingDer = project
   .in(file("modules/logging/derivation"))
@@ -111,7 +110,7 @@ lazy val loggingLayout = project
   .in(file("modules/logging/layout"))
   .settings(
     defaultSettings,
-    libraryDependencies ++= Seq(catsCore, catsEffect, logback, slf4j),
+    libraryDependencies ++= Seq(catsCore, logback, slf4j),
     name := "tofu-logging-layout"
   )
   .dependsOn(loggingStr)
@@ -121,9 +120,9 @@ lazy val loggingUtil = project
   .settings(
     defaultSettings,
     name := "tofu-logging-util",
-    libraryDependencies += slf4j,
+    libraryDependencies ++= Vector(slf4j, catsEffect),
   )
-  .dependsOn(loggingStr, concurrent)
+  .dependsOn(loggingStr)
 
 lazy val loggingShapeless = project
   .in(file("modules/logging/interop/shapeless"))

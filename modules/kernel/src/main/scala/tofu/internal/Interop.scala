@@ -26,6 +26,7 @@ class Interop(val c: blackbox.Context) {
     c.Expr[R](delegateParamTree[N](Seq(ps))(ts))
 
   def delegate[R: WTT, F[_]: WTTU, N: WTT]: c.Expr[R]                      = delegateImpl[R, N](tc[F])
+  def delegate2[R: WTT, I[_]: WTTU, F[_]: WTTU, N: WTT]: c.Expr[R]         = delegateImpl[R, N](tc[I], tc[F])
   def delegate1p1[R: WTT, T: WTT, F[_]: WTTU, N: WTT](p1: Tree): c.Expr[R] = delegateParamImpl[R, N](p1)(t[T], tc[F])
 }
 

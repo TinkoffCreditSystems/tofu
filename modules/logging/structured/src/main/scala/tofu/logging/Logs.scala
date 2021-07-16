@@ -1,7 +1,6 @@
 package tofu.logging
 
 import cats.data.Tuple2K
-import cats.effect.Sync
 import cats.kernel.Monoid
 import cats.tagless.syntax.functorK._
 import cats.tagless.{ApplyK, FunctorK}
@@ -24,6 +23,7 @@ import tofu.logging.impl.UniversalLogs
 import tofu.Delay
 import tofu.WithContext
 import tofu.logging.impl.UniversalContextLogs
+import tofu.concurrent.MakeQVar
 
 /** A helper for creating instances of [[tofu.logging.Logging]], defining a way these instances will behave while doing logging.
   * Can create instances either on a by-name basic or a type tag basic.
@@ -88,21 +88,21 @@ object Logs extends LogsInstances0 {
   /** Returns an instance of [[tofu.logging.Logs]] that requires [[cats.effect.Sync]] to perform logging side-effects.
     * Has no notion of context.
     */
-  def sync[I[_]: Sync, F[_]: Sync]: Logs[I, F] = new Logs[I, F] {
-    def byName(name: String): I[Logging[F]] = Sync[I].delay(new SyncLogging[F](LoggerFactory.getLogger(name)))
+  def sync[I[_]: Delay, F[_]: Delay: Monad]: Logs[I, F] = new Logs[I, F] {
+    def byName(name: String): I[Logging[F]] = Delay[I].delay(new SyncLogging[F](LoggerFactory.getLogger(name)))
   }
 
   def universal[F[_]: Delay]: Logs.Universal[F]                                                      = new UniversalLogs
   def contextual[F[_]: FlatMap: Delay, C: Loggable](implicit FC: F WithContext C): Logs.Universal[F] =
     new UniversalContextLogs[F, C]
 
-  def withContext[I[_]: Sync, F[_]: Sync](implicit ctx: LoggableContext[F]): Logs[I, F] = {
+  def withContext[I[_]: Delay, F[_]: Monad: Delay](implicit ctx: LoggableContext[F]): Logs[I, F] = {
     import ctx.loggable
     new Logs[I, F] {
       override def forService[Svc: ClassTag]: I[Logging[F]] =
-        Sync[I].delay(new ContextSyncLoggingImpl[F, ctx.Ctx](ctx.context, loggerForService[Svc]))
+        Delay[I].delay(new ContextSyncLoggingImpl[F, ctx.Ctx](ctx.context, loggerForService[Svc]))
       override def byName(name: String): I[Logging[F]]      =
-        Sync[I].delay(new ContextSyncLoggingImpl[F, ctx.Ctx](ctx.context, LoggerFactory.getLogger(name)))
+        Delay[I].delay(new ContextSyncLoggingImpl[F, ctx.Ctx](ctx.context, LoggerFactory.getLogger(name)))
     }
   }
 
@@ -138,7 +138,7 @@ object Logs extends LogsInstances0 {
   }
 
   final implicit class LogsOps[I[_], F[_]](private val logs: Logs[I, F]) extends AnyVal {
-    def cached(implicit IM: Monad[I], IQ: QVars[I], IG: Guarantee[I]): I[Logs[I, F]] =
+    def cached(implicit IM: Monad[I], IQ: MakeQVar[I, I], IG: Guarantee[I]): I[Logs[I, F]] =
       QVars[I]
         .of(Map.empty[String, Logging[F]])
         .map2(
@@ -149,7 +149,7 @@ object Logs extends LogsInstances0 {
 
     def cachedUniversal(implicit
         IM: Monad[I],
-        IQ: QVars[I],
+        IQ: MakeQVar[I, I],
         IG: Guarantee[I],
         il: Lift[I, F],
         F: FlatMap[F]

@@ -1,52 +1,58 @@
 package tofu.logging
 
-import cats.effect.SyncIO
-import cats.effect.concurrent.Ref
 import cats.instances.list._
 import cats.instances.unit._
 import tofu.syntax.monadic._
 import cats.syntax.foldable._
 import cats.syntax.traverse._
+import scala.collection.mutable
 
 import cats.{Applicative, Monoid}
 import io.circe.Json
+import cats.Eval
 
 sealed trait LogTree {
   import LogTree._
-  def json: SyncIO[Json] = this match {
-    case LogDict(values)      =>
-      values.get.flatMap { d => d.toList.traverse { case (name, t) => t.json.map(name -> _) }.map(Json.obj(_: _*)) }
+  def json: Eval[Json] = this match {
+    case dict: LogDict        =>
+      dict.getList.flatMap { _.traverse { case (name, t) => t.json.map(name -> _) }.map(Json.obj(_: _*)) }
     case LogArr(items)        => items.toList.traverse(_.json).map(Json.arr(_: _*))
-    case value: LogParamValue => value.jsonVal.pure[SyncIO]
+    case value: LogParamValue => value.jsonVal.pure[Eval]
   }
 }
 
+// pretty much unsafe mutable builder for circe.Json from logs
 object LogTree extends LogBuilder[Json] {
   implicit def monoid: Monoid[Output] = Applicative.monoid
 
-  type Output = SyncIO[Unit]
-  type ValRes = SyncIO[Boolean]
-  type Value  = Ref[SyncIO, LogTree]
-  type Top    = LogDict
+  type Output = Eval[Unit]
+  type ValRes = Eval[Boolean]
+  class Value(private var tree: LogTree) {
+    def get                 = Eval.always(tree)
+    def set(value: LogTree) = Eval.always { tree = value }
+  }
+  type Top = LogDict
 
-  final case class LogDict(values: Ref[SyncIO, Map[String, LogTree]]) extends LogTree {
-    def add(name: String, tree: LogTree): SyncIO[Unit] = values update (_ + (name -> tree))
+  class LogDict(private val values: mutable.Map[String, LogTree]) extends LogTree {
+    def add(name: String, tree: LogTree): Eval[Unit] = Eval.always(values.update(name, tree))
+    def getList: Eval[List[(String, LogTree)]]       = Eval.always(values.toList)
   }
 
   final case class LogArr(values: Iterable[LogTree]) extends LogTree
 
-  private val newdict = Ref[SyncIO].of(Map.empty[String, LogTree]).map(LogDict)
-  private val newtree = Ref[SyncIO].of(NullValue: LogTree)
+  private val newdict = Eval.always(mutable.Map.empty[String, LogTree]).map(new LogDict(_))
+  private val newtree = Eval.always(new Value(NullValue))
 
   val receiver: LogRenderer[LogDict, Value, Output, ValRes] = new LogRenderer[LogDict, Value, Output, ValRes] {
 
-    def coalesce(f: Value => ValRes, g: Value => ValRes, v: Value): ValRes                                =
-      f(v).flatMap(written => if (written) SyncIO(true) else g(v))
-    def zero(v: Ref[SyncIO, LogTree]): SyncIO[Boolean]                                                    = SyncIO(false)
-    def noop(i: LogDict): SyncIO[Unit]                                                                    = SyncIO.unit
-    def combine(x: SyncIO[Unit], y: SyncIO[Unit]): SyncIO[Unit]                                           = x *> y
-    def putValue(value: LogParamValue, input: Ref[SyncIO, LogTree]): SyncIO[Boolean]                      = input.set(value) as true
-    def sub(name: String, input: LogDict)(receive: Ref[SyncIO, LogTree] => SyncIO[Boolean]): SyncIO[Unit] =
+    def coalesce(f: Value => ValRes, g: Value => ValRes, v: Value): ValRes =
+      f(v).flatMap(written => if (written) Eval.now(true) else g(v))
+    def zero(v: Value): Eval[Boolean]                                      = Eval.now(false)
+    def noop(i: LogDict): Eval[Unit]                                       = Eval.now(())
+    def combine(x: Eval[Unit], y: Eval[Unit]): Eval[Unit]                  = x *> y
+    def putValue(value: LogParamValue, input: Value): Eval[Boolean]        = input.set(value) as true
+
+    def sub(name: String, input: LogDict)(receive: Value => Eval[Boolean]): Eval[Unit] =
       for {
         t <- newtree
         _ <- receive(t)
@@ -54,20 +60,20 @@ object LogTree extends LogBuilder[Json] {
         _ <- input.add(name, v)
       } yield ()
 
-    def list(size: Int, input: Ref[SyncIO, LogTree])(receive: (Value, Int) => SyncIO[Boolean]): SyncIO[Boolean] =
+    def list(size: Int, input: Value)(receive: (Value, Int) => Eval[Boolean]): Eval[Boolean] =
       for {
         ts <- newtree.replicateA(size)
         _  <- ts.zipWithIndex.traverse_(receive.tupled)
         vs <- ts.traverse(_.get)
         _  <- input.set(LogArr(vs))
       } yield true
-    def dict(input: Ref[SyncIO, LogTree])(receive: LogDict => SyncIO[Unit]): SyncIO[Boolean]                    =
+    def dict(input: Value)(receive: LogDict => Eval[Unit]): Eval[Boolean]                    =
       newdict flatMap input.set as true
   }
 
-  def buildJson(buildTree: LogDict => Output): SyncIO[Json] = newdict flatTap buildTree flatMap (_.json)
+  def buildJson(buildTree: LogDict => Output): Eval[Json] = newdict flatTap buildTree flatMap (_.json)
 
-  def make(f: LogDict => SyncIO[Unit]): Json = buildJson(f).unsafeRunSync()
+  def make(f: LogDict => Eval[Unit]): Json = buildJson(f).value
 }
 
 sealed trait LogParamValue extends LogTree {
