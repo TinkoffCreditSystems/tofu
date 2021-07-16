@@ -3,16 +3,17 @@ package tofu.internal.carriers
 import tofu.Finally
 import tofu.internal.WBInterop
 
-abstract class FinallyCarrier[F[_], E] {
+trait FinallyCarrier[F[_], E] {
   type Exit[_]
-  val content: Finally[F, Exit]
+  def content: Finally[F, Exit]
 }
 
 object FinallyCarrier {
   type Aux[F[_], E, Ex[_]] = FinallyCarrier[F, E] { type Exit[a] = Ex[a] }
-  def apply[F[_], E, Ex[_]](fin: Finally[F, Ex]) = new FinallyCarrier[F, E] {
+
+  trait Impl[F[_], E, Ex[_]] extends FinallyCarrier[F, E] with Finally[F, Ex] {
     type Exit[a] = Ex[a]
-    val content = fin
+    def content = this
   }
 
   final implicit def fromBracket[F[_], E, Exit[_]]: Aux[F, E, Exit] =
