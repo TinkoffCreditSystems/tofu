@@ -3,7 +3,7 @@ package tofu.internal
 import cats.arrow.FunctionK
 import cats.data.ReaderT
 import cats.{Applicative, Functor, Monad, ~>}
-import tofu.internal.carriers.UnliftEffect
+import tofu.internal.carriers.UnliftCarrier
 import tofu.lift.Unlift
 import tofu.syntax.monadic._
 import tofu.{WithContext, WithLocal, WithProvide, WithRun}
@@ -82,6 +82,6 @@ trait ContextBaseInstances5 extends ContextBaseInstances6 {
 }
 
 trait ContextBaseInstances6 {
-  final implicit def unliftEffect[F[_], G[_]](implicit carrier: UnliftEffect[F, G]): Unlift[F, G] =
-    carrier.value
+  final implicit def unliftEffect[F[_], G[_]](implicit carrier: UnliftCarrier[F, G]): Unlift[F, G] =
+    carrier
 }

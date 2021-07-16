@@ -1,15 +1,12 @@
 package tofu.concurrent
 import cats.{Applicative, Functor}
-import cats.effect.Sync
-import cats.effect.concurrent.Ref
-import tofu.Guarantee
-import tofu.concurrent.Atom.AtomByRef
+
 import tofu.higherKind.{RepresentableK, derived}
 import tofu.optics.Contains
 import tofu.syntax.monadic._
-import tofu.syntax.bracket._
 import cats.data.StateT
 import tofu.data.calc.CalcM
+import tofu.internal.carriers._
 
 /** a middleground between cats.concurrent.Ref and zio.Ref */
 trait Atom[+F[_], A] {
@@ -58,25 +55,6 @@ object Atom {
     }
   }
 
-  final case class AtomByRef[F[_], A](ref: Ref[F, A]) extends Atom[F, A] {
-    override def get: F[A]                       = ref.get
-    override def set(a: A): F[Unit]              = ref.set(a)
-    override def getAndSet(a: A): F[A]           = ref.getAndSet(a)
-    override def update(f: A => A): F[Unit]      = ref.update(f)
-    override def modify[B](f: A => (A, B)): F[B] = ref.modify(f)
-  }
-
-  final case class QAtom[F[_]: Applicative: Guarantee, A](qvar: QVar[F, A]) extends Atom[F, A] {
-    def get: F[A]                       = qvar.read
-    def set(a: A): F[Unit]              = getAndSet(a).void
-    def getAndSet(a: A): F[A]           = qvar.take.guaranteeAlways(qvar.put(a))
-    def update(f: A => A): F[Unit]      = qvar.take.bracketIncomplete(a => qvar.put(f(a)))(qvar.put)
-    def modify[B](f: A => (A, B)): F[B] = qvar.take.bracketIncomplete { a =>
-      val (next, res) = f(a)
-      qvar.put(next) as res
-    }(qvar.put)
-  }
-
   private[Atom] case class FocusedAtom[F[_]: Functor, A, B](v: Atom[F, A], focus: Contains[A, B]) extends Atom[F, B] {
     def get: F[B]                       = v.get.map(focus.get)
     def set(b: B): F[Unit]              = v.update(focus.set(_, b))
@@ -115,14 +93,16 @@ trait MakeAtom[I[_], F[_]] {
   def atom[A](a: A): I[Atom[F, A]]
 }
 
-object MakeAtom {
+object MakeAtom extends MakeAtomInterop {
   def apply[I[_], F[_]](implicit makeAtom: MakeAtom[I, F]) = new Applier[I, F](makeAtom)
 
   final class Applier[I[_], F[_]](private val makeAtom: MakeAtom[I, F]) extends AnyVal {
     def of[A](a: A): I[Atom[F, A]] = makeAtom.atom(a)
   }
 
-  implicit def syncInstance[I[_]: Sync, F[_]: Sync]: MakeAtom[I, F] = new MakeAtom[I, F] {
-    def atom[A](a: A): I[Atom[F, A]] = Ref.in[I, F, A](a).map(AtomByRef(_))
-  }
+  final implicit def interopCE3[I[_], F[_]](implicit carrier: MkAtomCE3Carrier[I, F]): MakeAtom[I, F] = carrier
+}
+
+trait MakeAtomInterop {
+  final implicit def interopCE2[I[_], F[_]](implicit carrier: MkAtomCE2Carrier[I, F]): MakeAtom[I, F] = carrier
 }

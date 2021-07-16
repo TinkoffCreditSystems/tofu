@@ -1,14 +1,17 @@
-package tofu.syntax
+package tofu
+package syntax
 
-import cats.effect.Clock
-import java.time._
+import java.time.{Clock => _, _}
 import java.util.concurrent.TimeUnit
 
 import cats.{Apply, Functor}
 import tofu.common.{TimeData, TimeZone}
 import tofu.syntax.monadic._
+import scala.concurrent.duration.FiniteDuration
 
 object time {
+  def sleep[F[_]](duration: FiniteDuration)(implicit sleep: Sleep[F]): F[Unit] = sleep.sleep(duration)
+
   object zone {
 
     /** current System time zone */
@@ -35,7 +38,7 @@ object time {
 
   object now {
     def millis[F[_]](implicit clock: Clock[F]): F[Long]    = clock.realTime(TimeUnit.MILLISECONDS)
-    def monoNanos[F[_]](implicit clock: Clock[F]): F[Long] = clock.monotonic(TimeUnit.NANOSECONDS)
+    def monoNanos[F[_]](implicit clock: Clock[F]): F[Long] = clock.nanos
 
     def instant[F[_]: Clock: Functor]: F[Instant] = millis[F].map(Instant.ofEpochMilli)
 

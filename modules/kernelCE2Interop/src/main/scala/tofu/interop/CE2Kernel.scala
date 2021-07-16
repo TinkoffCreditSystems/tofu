@@ -1,28 +1,20 @@
 package tofu
 package interop
-import tofu.lift.Unlift
 
-import cats.effect.Sync
+import cats.effect.concurrent.{MVar, Ref}
+import cats.effect.{Async, Blocker, Bracket, Concurrent, ContextShift, Effect, ExitCase, Fiber, IO, Sync, Timer}
+import cats.{Id, ~>}
 import tofu.Delay
-import cats.effect.Effect
-import cats.effect.IO
-import tofu.syntax.monadic._
-import cats.{~>, Id}
-import cats.effect.Concurrent
-import cats.effect.Timer
-import cats.effect.Fiber
-import scala.concurrent.duration.FiniteDuration
-import tofu.internal.NonTofu
 import tofu.compat.unused
-import cats.effect.Bracket
-import cats.effect.ExitCase
+import tofu.concurrent.{Atom, QVar}
+import tofu.internal.NonTofu
 import tofu.internal.carriers._
-import scala.concurrent.ExecutionContext
-import cats.effect.ContextShift
-import cats.effect.Async
 import tofu.kernel.types._
-import scala.concurrent.Future
-import cats.effect.Blocker
+import tofu.syntax.monadic._
+
+import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.{ExecutionContext, Future}
+import java.util.concurrent.TimeUnit
 
 object CE2Kernel {
   // 2.12 sometimes gets mad on Const partial alias during implicit search
@@ -33,49 +25,44 @@ object CE2Kernel {
       def delay[A](a: => A): K[A] = KS.delay(a)
     }
 
-  def unliftEffect[K[_]](implicit KE: Effect[K]): UnliftEffect[IO, K] =
-    new UnliftEffect(
-      new Unlift[IO, K] {
-        def lift[A](fa: IO[A]): K[A] = Effect[K].liftIO(fa)
-        def unlift: K[K ~> IO]       = Effect.toIOK[K].pure[K]
-      }
-    )
+  def unliftEffect[K[_]](implicit KE: Effect[K]): UnliftCarrier[IO, K] =
+    new UnliftCarrier[IO, K] {
+      def lift[A](fa: IO[A]): K[A] = Effect[K].liftIO(fa)
+      def unlift: K[K ~> IO]       = Effect.toIOK[K].pure[K]
+    }
 
-  def concurrentTimeout[F[_]: Concurrent: Timer](implicit @unused nonTofu: NonTofu[F]): Timeout[F] = new Timeout[F] {
-    override def timeoutTo[A](fa: F[A], after: FiniteDuration, fallback: F[A]): F[A] =
-      Concurrent.timeoutTo(fa, after, fallback)
-  }
+  def timeout[F[_]: Concurrent: Timer](implicit @unused nonTofu: NonTofu[F]): TimeoutCE2Carrier[F] =
+    new TimeoutCE2Carrier[F] {
+      override def timeoutTo[A](fa: F[A], after: FiniteDuration, fallback: F[A]): F[A] =
+        Concurrent.timeoutTo(fa, after, fallback)
+    }
 
   final implicit def finallyFromBracket[F[_], E](implicit
       F: Bracket[F, E]
   ): FinallyCarrier.Aux[F, E, CEExit[E, *]] =
-    FinallyCarrier[F, E, CEExit[E, *]](
-      new Finally[F, CEExit[E, *]] {
-        def finallyCase[A, B, C](init: F[A])(action: A => F[B])(release: (A, CEExit[E, B]) => F[C]): F[B] =
-          F.bracketCase(init)(action) { case (a, exit) =>
-            F.void(release(a, exit))
-          }
-        def bracket[A, B, C](init: F[A])(action: A => F[B])(release: (A, Boolean) => F[C]): F[B]          =
-          F.bracketCase(init)(action) {
-            case (a, ExitCase.Completed) => F.void(release(a, true))
-            case (a, _)                  => F.void(release(a, false))
-          }
-      }
-    )
+    new FinallyCarrier.Impl[F, E, CEExit[E, *]] {
+      def finallyCase[A, B, C](init: F[A])(action: A => F[B])(release: (A, CEExit[E, B]) => F[C]): F[B] =
+        F.bracketCase(init)(action) { case (a, exit) =>
+          F.void(release(a, exit))
+        }
+      def bracket[A, B, C](init: F[A])(action: A => F[B])(release: (A, Boolean) => F[C]): F[B]          =
+        F.bracketCase(init)(action) {
+          case (a, ExitCase.Completed) => F.void(release(a, true))
+          case (a, _)                  => F.void(release(a, false))
+        }
+    }
 
   final implicit def startFromConcurrent[F[_]](implicit
       F: Concurrent[F],
       @unused _nonTofu: NonTofu[F]
   ): FibersCarrier.Aux[F, Id, Fiber[F, *]] =
-    FibersCarrier[F, Id, Fiber[F, *]](
-      new Fibers[F, Id, Fiber[F, *]] {
-        def start[A](fa: F[A]): F[Fiber[F, A]]                                                = F.start(fa)
-        def fireAndForget[A](fa: F[A]): F[Unit]                                               = F.void(start(fa))
-        def racePair[A, B](fa: F[A], fb: F[B]): F[Either[(A, Fiber[F, B]), (Fiber[F, A], B)]] = F.racePair(fa, fb)
-        def race[A, B](fa: F[A], fb: F[B]): F[Either[A, B]]                                   = F.race(fa, fb)
-        def never[A]: F[A]                                                                    = F.never
-      }
-    )
+    new FibersCarrier.Impl[F, Id, Fiber[F, *]] {
+      def start[A](fa: F[A]): F[Fiber[F, A]]                                                = F.start(fa)
+      def fireAndForget[A](fa: F[A]): F[Unit]                                               = F.void(start(fa))
+      def racePair[A, B](fa: F[A], fb: F[B]): F[Either[(A, Fiber[F, B]), (Fiber[F, A], B)]] = F.racePair(fa, fb)
+      def race[A, B](fa: F[A], fb: F[B]): F[Either[A, B]]                                   = F.race(fa, fb)
+      def never[A]: F[A]                                                                    = F.never
+    }
 
   final def makeExecute[Tag, F[_]](
       ec: ExecutionContext
@@ -100,4 +87,27 @@ object CE2Kernel {
       blocker: Blocker,
       F: Async[F]
   ): BlockExec[F] = makeExecute[Scoped.Blocking, F](blocker.blockingContext)
+
+  final def atomBySync[I[_]: Sync, F[_]: Sync]: MkAtomCE2Carrier[I, F] =
+    new MkAtomCE2Carrier[I, F] {
+      def atom[A](a: A): I[Atom[F, A]] = Ref.in[I, F, A](a).map(AtomByRef(_))
+    }
+
+  final def qvarByConcurrent[I[_]: Sync, F[_]: Concurrent]: MkQVarCE2Carrier[I, F] =
+    new MkQVarCE2Carrier[I, F] {
+      def qvarOf[A](a: A): I[QVar[F, A]] = MVar.in[I, F, A](a).map(QVarByMVar(_))
+      def qvarEmpty[A]: I[QVar[F, A]]    = MVar.emptyIn[I, F, A].map(QVarByMVar(_))
+    }
+
+  final def clock[F[_]](implicit C: cats.effect.Clock[F]): ClockCE2Carrier[F] =
+    new ClockCE2Carrier[F] {
+      def realTime(unit: TimeUnit): F[Long] = C.realTime(unit)
+
+      def nanos: F[Long] = C.monotonic(TimeUnit.NANOSECONDS)
+    }
+
+  final def sleep[F[_]](implicit T: cats.effect.Timer[F]): SleepCE2Carrier[F] =
+    new SleepCE2Carrier[F] {
+      def sleep(duration: FiniteDuration): F[Unit] = T.sleep(duration)
+    }
 }
