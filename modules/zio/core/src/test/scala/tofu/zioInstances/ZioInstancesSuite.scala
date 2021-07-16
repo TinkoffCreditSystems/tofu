@@ -69,6 +69,8 @@ object ZioInstancesSuite {
     new SyncDependency[Task]
     new RaiseDependency[Task]
     new ErrorsDependency[Task]
+
+    implicitly[Throws[Task]]
   }
 
 }
